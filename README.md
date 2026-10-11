@@ -1,73 +1,50 @@
-# mdview
+# mdview-win
 
-A fast, native Markdown viewer built with Zig. Cross-platform — Windows, Linux, and macOS.
+Windows-only Fork von [nathannncurtis/mdview-zig](https://github.com/nathannncurtis/mdview-zig) — schneller, nativer Markdown-Viewer in Zig. Kleine portable `.exe` (~290 KB), keine Laufzeit-Abhängigkeiten (DirectWrite/Direct2D aus dem System).
 
-Dark-themed, borderless floating window that renders Markdown with GitHub-dark styling. Rewrite of the [Rust version](https://github.com/nathannncurtis/mdview) — ~285 KB standalone binary, no webview, no runtime dependencies.
+## Änderungen gegenüber Upstream
 
-## Features
-
-- **Cross-platform** — Windows (DirectWrite), Linux (X11 + Cairo + Pango), macOS (Cocoa + CoreText)
-- **GitHub-dark theme** — easy on the eyes
-- **Borderless floating window** — clean, minimal chrome
-- **Syntax highlighting** in code blocks
-- **Bold/italic** inline formatting
-- **File watching** — auto-reloads when the file changes on disk
-- **Drag & drop** — drop any `.md` file onto the window to open it
-- **Scroll position memory** — remembers where you left off across sessions
-- **Register as default viewer** — `--register` on Windows, `.desktop` file on Linux
+- **GFM-Tabellen**: echtes Grid statt Pipe-Fließtext — fetter Header mit Hintergrund, Zebra-Zeilen, Gitterlinien, Spaltenbreiten per DirectWrite-Messung, Textumbruch bei Überbreite.
+- **Normales Fenster**: Standard-Titelleiste mit Minimieren/Maximieren/Schließen, Ziehen an der Leiste (Alt+Ziehen von überall geht weiterhin). Fixt außerdem den Bug, dass bloßes Hovern über das gemalte X das Fenster sofort schloss (`PostQuitMessage` in `WM_NCHITTEST`).
+- **Dateiname im Fenstertitel** (`mdview - foo.md`), aktualisiert sich auch bei Drag & Drop.
+- **Pos1/Ende**: springt nach ganz oben/unten.
+- **Nur Windows**: Linux-Backend (X11/Cairo/Pango) und macOS-Backend (Cocoa/CoreText) entfernt — weniger Code, ein Ziel.
 
 ## Install
 
-Download from the [latest release](https://github.com/nathannncurtis/mdview-zig/releases/latest):
+Aus dem [neuesten Release](https://github.com/RaYVen1337/mdview-zig/releases/latest) `mdview.exe` laden, z. B. nach `%USERPROFILE%\.local\bin` (liegt im `PATH`), dann als Standard-Viewer registrieren:
 
-| Platform | Files |
-|---|---|
-| Windows | `mdview-setup.exe` (installer) or `mdview.exe` (portable) |
-| Linux | `mdview-linux-x86_64.deb` (Debian/Ubuntu) or `mdview` (standalone binary) |
-| macOS | `mdview-macos-arm64.dmg` (Apple Silicon) |
+```
+mdview --register
+```
 
-- **Windows installer** — per-user or system-wide install, optionally associates `.md` / `.markdown` files
-- **Linux .deb** — `sudo dpkg -i mdview-linux-x86_64.deb`, registers `.desktop` entry and `text/markdown` MIME type
-- **macOS .dmg** — drag `mdview.app` to `/Applications`
-
-## Usage
+## Benutzung
 
 ```
 mdview README.md
-mdview --register      # register as default .md viewer (Windows/Linux)
 ```
 
-Or drag and drop a `.md` file onto the window.
+Oder eine `.md`-Datei aufs Fenster ziehen. Das Fenster lädt neu, wenn sich die Datei ändert, und merkt sich die Scrollposition.
 
-## Keybindings
+## Tasten
 
-| Key | Action |
-|---|---|
-| Ctrl+Q | Quit |
-| Alt+Drag | Move window |
-| Scroll | Scroll content |
+| Taste     | Aktion              |
+| --------- | ------------------- |
+| Strg+Q    | Beenden             |
+| Pos1/Ende | Nach oben/unten     |
+| Alt+Ziehen| Fenster verschieben |
+| Scrollen  | Scrollen            |
 
-## Build from source
+## Aus dem Quellcode bauen
 
-Requires [Zig 0.14+](https://ziglang.org/download/).
+[Zig 0.14.1](https://ziglang.org/download/0.14.1/zig-x86_64-windows-0.14.1.zip) genügt, keine weiteren Abhängigkeiten:
 
 ```
 zig build -Doptimize=ReleaseSmall
 ```
 
-### Platform dependencies
+Die `.exe` liegt danach in `zig-out/bin/`.
 
-- **Windows** — none (uses system DirectWrite/Direct2D)
-- **Linux** — `libx11-dev libcairo2-dev libpango1.0-dev`
-- **macOS** — none (uses system Cocoa/CoreText frameworks)
+## Lizenz
 
-## Logging
-
-Logs are written to:
-- **Windows** — `%LOCALAPPDATA%\mdview\mdview-zig.log`
-- **Linux** — `~/.local/share/mdview/mdview-zig.log`
-- **macOS** — `~/Library/Application Support/mdview/mdview-zig.log`
-
-## License
-
-[MIT](LICENSE)
+[GPL-3.0](LICENSE), wie Upstream. Dank an [nathannncurtis](https://github.com/nathannncurtis) für das Original.

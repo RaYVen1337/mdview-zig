@@ -2,12 +2,10 @@ const std = @import("std");
 const builtin = @import("builtin");
 pub const md = @import("markdown.zig");
 
-// Platform-specific backend
+// Platform-specific backend (Windows-only Fork)
 pub const platform = switch (builtin.os.tag) {
     .windows => @import("win32.zig"),
-    .linux => @import("linux.zig"),
-    .macos => @import("macos.zig"),
-    else => @compileError("Unsupported platform"),
+    else => @compileError("Nur Windows wird unterstützt (Windows-only Fork)"),
 };
 
 // Shared state

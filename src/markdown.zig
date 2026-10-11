@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const BlockKind = enum { h1, h2, h3, paragraph, code_block, blockquote, hr, list_item, blank };
+pub const BlockKind = enum { h1, h2, h3, paragraph, code_block, blockquote, hr, list_item, blank, table_header, table_row };
 
 pub const Block = struct {
     kind: BlockKind,
@@ -11,6 +11,9 @@ pub const Block = struct {
     italic_count: u32 = 0,
     code_ranges: [16][2]u32 = undefined,
     code_count: u32 = 0,
+    // Tables: cells are stored in `text` joined by 0x1F separators.
+    cell_count: u8 = 0,
+    cell_aligns: [8]u8 = [_]u8{0} ** 8, // 0=left, 1=center, 2=right
 };
 
 pub const MAX_BLOCKS = 1024;
@@ -25,12 +28,21 @@ pub fn parse(markdown: []const u8) void {
     block_count = 0;
     text_len = 0;
 
+    // Collect lines first so tables (header + delimiter) can use 1-line lookahead.
+    var lines: [4096][]const u8 = undefined;
+    var line_count: usize = 0;
+    var split = std.mem.splitScalar(u8, markdown, '\n');
+    while (split.next()) |raw_line| {
+        if (line_count >= lines.len) break;
+        lines[line_count] = std.mem.trimRight(u8, raw_line, "\r");
+        line_count += 1;
+    }
+
     var in_code = false;
     var code_start: usize = 0;
-    var lines = std.mem.splitScalar(u8, markdown, '\n');
-
-    while (lines.next()) |raw_line| {
-        const line = std.mem.trimRight(u8, raw_line, "\r");
+    var i: usize = 0;
+    while (i < line_count) {
+        const line = lines[i];
 
         if (std.mem.startsWith(u8, line, "```")) {
             if (in_code) {
@@ -41,19 +53,37 @@ pub fn parse(markdown: []const u8) void {
                 in_code = true;
                 code_start = text_len;
             }
+            i += 1;
             continue;
         }
 
         if (in_code) {
             appendText(line);
             appendText("\n");
+            i += 1;
             continue;
         }
 
-        if (line.len == 0) continue;
+        if (line.len == 0) {
+            i += 1;
+            continue;
+        }
+
+        // GFM table: header row followed by a delimiter row.
+        if (isTableRow(line) and i + 1 < line_count and isTableDelimiter(lines[i + 1])) {
+            addTableBlock(.table_header, line, lines[i + 1]);
+            i += 2;
+            while (i < line_count and isTableRow(lines[i]) and !isTableDelimiter(lines[i])) {
+                if (isOtherBlockStart(lines[i])) break;
+                addTableBlock(.table_row, lines[i], null);
+                i += 1;
+            }
+            continue;
+        }
 
         if (std.mem.startsWith(u8, line, "---") or std.mem.startsWith(u8, line, "***") or std.mem.startsWith(u8, line, "___")) {
             addBlock(.hr, "");
+            i += 1;
             continue;
         }
 
@@ -71,11 +101,97 @@ pub fn parse(markdown: []const u8) void {
             const dot = std.mem.indexOf(u8, line, ". ").?;
             addInlineBlock(.list_item, line[dot + 2 ..]);
         } else if (std.mem.startsWith(u8, line, "<")) {
+            i += 1;
             continue;
         } else {
             addInlineBlock(.paragraph, line);
         }
+        i += 1;
     }
+}
+
+fn isOtherBlockStart(line: []const u8) bool {
+    if (std.mem.startsWith(u8, line, "```")) return true;
+    if (std.mem.startsWith(u8, line, "### ") or std.mem.startsWith(u8, line, "## ") or std.mem.startsWith(u8, line, "# ")) return true;
+    if (std.mem.startsWith(u8, line, "> ")) return true;
+    if (std.mem.startsWith(u8, line, "- ") or std.mem.startsWith(u8, line, "* ")) return true;
+    if (std.mem.startsWith(u8, line, "---") or std.mem.startsWith(u8, line, "***") or std.mem.startsWith(u8, line, "___")) return true;
+    return false;
+}
+
+fn isTableDelimiter(line: []const u8) bool {
+    var s = std.mem.trim(u8, line, " \t");
+    if (s.len == 0) return false;
+    if (s[0] == '|') s = s[1..];
+    if (s.len == 0) return false;
+    if (s[s.len - 1] == '|') s = s[0 .. s.len - 1];
+    var parts = std.mem.splitScalar(u8, s, '|');
+    var count: usize = 0;
+    while (parts.next()) |p| {
+        const c = std.mem.trim(u8, p, " \t");
+        if (c.len == 0) return false;
+        var has_dash = false;
+        for (c) |ch| {
+            if (ch == '-') {
+                has_dash = true;
+            } else if (ch == ':') {
+            } else {
+                return false;
+            }
+        }
+        if (!has_dash) return false;
+        count += 1;
+    }
+    return count >= 1;
+}
+
+fn isTableRow(line: []const u8) bool {
+    if (line.len == 0) return false;
+    if (std.mem.indexOfScalar(u8, line, '|') == null) return false;
+    if (isTableDelimiter(line)) return false;
+    return true;
+}
+
+fn addTableBlock(kind: BlockKind, row_line: []const u8, delim_line: ?[]const u8) void {
+    if (block_count >= blocks.len) return;
+    var cells: [8][]const u8 = undefined;
+    var n: usize = 0;
+    var s = std.mem.trim(u8, row_line, " \t");
+    if (s.len > 0 and s[0] == '|') s = s[1..];
+    if (s.len > 0 and s[s.len - 1] == '|') s = s[0 .. s.len - 1];
+    var it = std.mem.splitScalar(u8, s, '|');
+    while (it.next()) |p| {
+        if (n >= cells.len) break;
+        cells[n] = std.mem.trim(u8, p, " \t");
+        n += 1;
+    }
+    if (n == 0) return;
+    const start = text_len;
+    var idx: usize = 0;
+    while (idx < n) : (idx += 1) {
+        if (idx > 0) appendByte(0x1F);
+        appendText(cells[idx]);
+    }
+    var b = Block{ .kind = kind, .text = undefined };
+    b.cell_count = @intCast(n);
+    if (delim_line) |d| {
+        var ds = std.mem.trim(u8, d, " \t");
+        if (ds.len > 0 and ds[0] == '|') ds = ds[1..];
+        if (ds.len > 0 and ds[ds.len - 1] == '|') ds = ds[0 .. ds.len - 1];
+        var dit = std.mem.splitScalar(u8, ds, '|');
+        var ci: usize = 0;
+        while (dit.next()) |p| {
+            if (ci >= n) break;
+            const c = std.mem.trim(u8, p, " \t");
+            const left = c.len > 0 and c[0] == ':';
+            const right = c.len > 0 and c[c.len - 1] == ':';
+            b.cell_aligns[ci] = if (left and right) 1 else if (right) 2 else 0;
+            ci += 1;
+        }
+    }
+    b.text = text_buf[start..text_len];
+    blocks[block_count] = b;
+    block_count += 1;
 }
 
 fn appendText(text: []const u8) void {

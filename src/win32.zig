@@ -27,12 +27,15 @@ const WM_NCCALCSIZE: u32 = 0x0083;
 const WM_TIMER: u32 = 0x0113;
 const WM_DROPFILES: u32 = 0x0233;
 const VK_Q: usize = 0x51;
+const VK_HOME: usize = 0x24;
+const VK_END: usize = 0x23;
 const VK_MENU: i32 = 0x12;
 const VK_CONTROL: i32 = 0x11;
 const CS_HREDRAW: u32 = 0x0002;
 const CS_VREDRAW: u32 = 0x0001;
 const WS_POPUP: u32 = 0x80000000;
 const WS_VISIBLE: u32 = 0x10000000;
+const WS_OVERLAPPEDWINDOW: u32 = 0x00CF0000;
 const WS_THICKFRAME: u32 = 0x00040000;
 const WS_SYSMENU: u32 = 0x00080000;
 const WS_MINIMIZEBOX: u32 = 0x00020000;
@@ -77,6 +80,7 @@ extern "user32" fn DispatchMessageW(lpMsg: *const MSG) callconv(.C) LRESULT;
 extern "user32" fn PostQuitMessage(nExitCode: i32) callconv(.C) void;
 extern "user32" fn ShowWindow(hWnd: HWND, nCmdShow: i32) callconv(.C) BOOL;
 extern "user32" fn UpdateWindow(hWnd: HWND) callconv(.C) BOOL;
+extern "user32" fn SetWindowTextW(hWnd: HWND, lpString: [*:0]const u16) callconv(.C) BOOL;
 extern "user32" fn GetClientRect(hWnd: HWND, lpRect: *RECT) callconv(.C) BOOL;
 extern "user32" fn InvalidateRect(hWnd: HWND, lpRect: ?*const RECT, bErase: BOOL) callconv(.C) BOOL;
 extern "user32" fn RegisterClassExW(lpwcx: *const WNDCLASSEXW) callconv(.C) u16;
@@ -208,6 +212,9 @@ var g_brush_hl_comment: ?*anyopaque = null;
 var g_brush_hl_number: ?*anyopaque = null;
 var g_brush_hl_type: ?*anyopaque = null;
 var g_brush_hl_func: ?*anyopaque = null;
+var g_brush_table_header_bg: ?*anyopaque = null;
+var g_brush_table_row_alt: ?*anyopaque = null;
+var g_brush_table_border: ?*anyopaque = null;
 
 pub fn invalidate() void {
     if (g_hwnd) |h| _ = InvalidateRect(h, null, 0);
@@ -227,7 +234,7 @@ pub fn run() void {
 
     const hwnd = CreateWindowExW(
         WS_EX_ACCEPTFILES, class_name, L("mdview"),
-        WS_POPUP | WS_VISIBLE | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX,
+        WS_OVERLAPPEDWINDOW | WS_VISIBLE,
         CW_USEDEFAULT, CW_USEDEFAULT, 900, 700, null, null, hi, null,
     ) orelse return;
     g_hwnd = hwnd;
@@ -239,6 +246,7 @@ pub fn run() void {
     _ = SetTimer(hwnd, TIMER_SCROLL_SAVE, 3000, null);
     _ = ShowWindow(hwnd, SW_SHOW);
     _ = UpdateWindow(hwnd);
+    updateTitle();
 
     var msg: MSG = undefined;
     while (GetMessageW(&msg, null, 0, 0) != 0) {
@@ -287,6 +295,9 @@ fn createBrushes(rt: *anyopaque) void {
     _ = vt.CreateSolidColorBrush(rt, &.{ .r = 0.475, .g = 0.753, .b = 1.0, .a = 1 }, null, &g_brush_hl_number);
     _ = vt.CreateSolidColorBrush(rt, &.{ .r = 1.0, .g = 0.651, .b = 0.341, .a = 1 }, null, &g_brush_hl_type);
     _ = vt.CreateSolidColorBrush(rt, &.{ .r = 0.824, .g = 0.659, .b = 1.0, .a = 1 }, null, &g_brush_hl_func);
+    _ = vt.CreateSolidColorBrush(rt, &.{ .r = 0.086, .g = 0.114, .b = 0.152, .a = 1 }, null, &g_brush_table_header_bg);
+    _ = vt.CreateSolidColorBrush(rt, &.{ .r = 0.062, .g = 0.078, .b = 0.102, .a = 1 }, null, &g_brush_table_row_alt);
+    _ = vt.CreateSolidColorBrush(rt, &.{ .r = 0.188, .g = 0.227, .b = 0.282, .a = 1 }, null, &g_brush_table_border);
 }
 
 // ============================================================
@@ -351,19 +362,18 @@ fn render() void {
                 vt_rt.FillRectangle(rt, &.{ .left = padding, .top = y, .right = padding + max_width, .bottom = y + 2 }, g_brush_hr.?);
                 y += 14;
             },
+            .table_header, .table_row => {
+                var next: usize = i;
+                y += renderTable(vt_rt, vt_dw, rt, dwf, i, padding, y, max_width, &next) + 16;
+                i = next - 1;
+            },
             .blank => {},
         }
     }
 
     app.content_height = y + padding;
 
-    // Close button
     vt_rt.SetTransform(rt, &.{ .m = .{ 1, 0, 0, 1, 0, 0 } });
-    if (g_brush_close) |brush| {
-        const bx = app.window_width - 36;
-        vt_rt.DrawLine(rt, .{ .x = bx + 4, .y = 12 }, .{ .x = bx + 20, .y = 28 }, brush, 1.5, null);
-        vt_rt.DrawLine(rt, .{ .x = bx + 20, .y = 12 }, .{ .x = bx + 4, .y = 28 }, brush, 1.5, null);
-    }
 
     _ = vt_rt.EndDraw(rt, null, null);
 }
@@ -423,6 +433,162 @@ fn renderCodeBlock(vt_rt: *const ID2D1RT_VTable, vt_dw: *const IDWriteFactory_VT
         vt_rt.DrawTextLayout(rt, .{ .x = x + 16, .y = y + 12 }, lay, brush, 0);
     }
     return block_height;
+}
+
+fn measureCellWidth(vt_dw: *const IDWriteFactory_VTable, dwf: *anyopaque, fmt: *anyopaque, cell: []const u8) f32 {
+    if (cell.len == 0) return 0;
+    var wide_buf: [4096]u16 = undefined;
+    const wide_len = std.unicode.utf8ToUtf16Le(&wide_buf, cell) catch return 60;
+    if (wide_len == 0) return 0;
+    var layout: ?*anyopaque = null;
+    _ = vt_dw.CreateTextLayout(dwf, &wide_buf, @intCast(wide_len), fmt, 4000, 10000, &layout);
+    const lay = layout orelse return 60;
+    defer _ = vtable(IDWriteTextLayout_VTable, lay).Release(lay);
+    var metrics: DWRITE_TEXT_METRICS = undefined;
+    _ = vtable(IDWriteTextLayout_VTable, lay).GetMetrics(lay, &metrics);
+    return metrics.width;
+}
+
+fn measureCellHeight(vt_dw: *const IDWriteFactory_VTable, dwf: *anyopaque, fmt: *anyopaque, cell: []const u8, avail_width: f32) f32 {
+    if (cell.len == 0) return 20;
+    var wide_buf: [4096]u16 = undefined;
+    const wide_len = std.unicode.utf8ToUtf16Le(&wide_buf, cell) catch return 20;
+    if (wide_len == 0) return 20;
+    var layout: ?*anyopaque = null;
+    _ = vt_dw.CreateTextLayout(dwf, &wide_buf, @intCast(wide_len), fmt, @max(avail_width, 20), 10000, &layout);
+    const lay = layout orelse return 20;
+    defer _ = vtable(IDWriteTextLayout_VTable, lay).Release(lay);
+    var metrics: DWRITE_TEXT_METRICS = undefined;
+    _ = vtable(IDWriteTextLayout_VTable, lay).GetMetrics(lay, &metrics);
+    return metrics.height;
+}
+
+fn drawCellText(vt_rt: *const ID2D1RT_VTable, vt_dw: *const IDWriteFactory_VTable, rt: *anyopaque, dwf: *anyopaque, cell: []const u8, fmt: *anyopaque, bold: bool, brush: *anyopaque, x: f32, y: f32, width: f32) void {
+    if (cell.len == 0) return;
+    var wide_buf: [4096]u16 = undefined;
+    const wide_len = std.unicode.utf8ToUtf16Le(&wide_buf, cell) catch return;
+    if (wide_len == 0) return;
+    var layout: ?*anyopaque = null;
+    _ = vt_dw.CreateTextLayout(dwf, &wide_buf, @intCast(wide_len), fmt, @max(width, 20), 10000, &layout);
+    const lay = layout orelse return;
+    defer _ = vtable(IDWriteTextLayout_VTable, lay).Release(lay);
+    if (bold) {
+        _ = vtable(IDWriteTextLayout_VTable, lay).SetFontWeight(lay, 700, .{ .startPosition = 0, .length = @intCast(wide_len) });
+    }
+    vt_rt.DrawTextLayout(rt, .{ .x = x, .y = y }, lay, brush, 0);
+}
+
+// Renders a run of consecutive table_header/table_row blocks starting at
+// `start` as a grid. Sets next_out to the first block after the table and
+// returns the table height (without trailing spacing).
+fn renderTable(vt_rt: *const ID2D1RT_VTable, vt_dw: *const IDWriteFactory_VTable, rt: *anyopaque, dwf: *anyopaque, start: usize, x: f32, y: f32, max_width: f32, next_out: *usize) f32 {
+    var end = start;
+    while (end < md.block_count and (md.blocks[end].kind == .table_header or md.blocks[end].kind == .table_row)) : (end += 1) {}
+    next_out.* = end;
+    var nrows = end - start;
+    if (nrows == 0) return 0;
+    if (nrows > 128) {
+        nrows = 128;
+        end = start + 128;
+        next_out.* = end;
+    }
+
+    var ncols: usize = 0;
+    var r: usize = start;
+    while (r < end) : (r += 1) {
+        if (md.blocks[r].cell_count > ncols) ncols = md.blocks[r].cell_count;
+    }
+    if (ncols == 0 or ncols > 8) return 0;
+
+    const fmt_body = g_text_format orelse return 0;
+    const text_brush = g_brush_text orelse return 0;
+
+    const hpad: f32 = 16;
+    var col_w: [8]f32 = [_]f32{0} ** 8;
+    r = start;
+    while (r < end) : (r += 1) {
+        var it = std.mem.splitScalar(u8, md.blocks[r].text, 0x1F);
+        var c: usize = 0;
+        while (it.next()) |cell| {
+            if (c >= ncols) break;
+            const w = measureCellWidth(vt_dw, dwf, fmt_body, cell);
+            if (w > col_w[c]) col_w[c] = w;
+            c += 1;
+        }
+    }
+    var ci: usize = 0;
+    var total: f32 = 0;
+    while (ci < ncols) : (ci += 1) {
+        col_w[ci] += hpad;
+        if (col_w[ci] < 48) col_w[ci] = 48;
+        total += col_w[ci];
+    }
+    if (total > max_width and total > 0) {
+        const scale = max_width / total;
+        ci = 0;
+        while (ci < ncols) : (ci += 1) col_w[ci] *= scale;
+        total = max_width;
+    }
+
+    var row_h: [128]f32 = [_]f32{0} ** 128;
+    r = start;
+    while (r < end) : (r += 1) {
+        var it = std.mem.splitScalar(u8, md.blocks[r].text, 0x1F);
+        var c: usize = 0;
+        var mh: f32 = 20;
+        while (it.next()) |cell| {
+            if (c >= ncols) break;
+            const h = measureCellHeight(vt_dw, dwf, fmt_body, cell, col_w[c] - hpad);
+            if (h > mh) mh = h;
+            c += 1;
+        }
+        row_h[r - start] = mh + 16;
+    }
+
+    var y_cur = y;
+    r = start;
+    while (r < end) : (r += 1) {
+        const blk = &md.blocks[r];
+        const is_header = blk.kind == .table_header;
+        const h = row_h[r - start];
+        if (is_header) {
+            if (g_brush_table_header_bg) |bg| {
+                vt_rt.FillRectangle(rt, &.{ .left = x, .top = y_cur, .right = x + total, .bottom = y_cur + h }, bg);
+            }
+        } else if ((r - start) % 2 == 0) {
+            if (g_brush_table_row_alt) |bg| {
+                vt_rt.FillRectangle(rt, &.{ .left = x, .top = y_cur, .right = x + total, .bottom = y_cur + h }, bg);
+            }
+        }
+        var it = std.mem.splitScalar(u8, blk.text, 0x1F);
+        var x_cur = x;
+        var c: usize = 0;
+        while (it.next()) |cell| {
+            if (c >= ncols) break;
+            drawCellText(vt_rt, vt_dw, rt, dwf, cell, fmt_body, is_header, text_brush, x_cur + 8, y_cur + 8, col_w[c] - hpad);
+            x_cur += col_w[c];
+            c += 1;
+        }
+        while (c < ncols) : (c += 1) {
+            x_cur += col_w[c];
+        }
+        if (g_brush_table_border) |bd| {
+            vt_rt.FillRectangle(rt, &.{ .left = x, .top = y_cur + h - 1, .right = x + total, .bottom = y_cur + h }, bd);
+        }
+        y_cur += h;
+    }
+
+    if (g_brush_table_border) |bd| {
+        vt_rt.FillRectangle(rt, &.{ .left = x, .top = y, .right = x + total, .bottom = y + 1 }, bd);
+        vt_rt.FillRectangle(rt, &.{ .left = x, .top = y, .right = x + 1, .bottom = y_cur }, bd);
+        var x_cur = x;
+        ci = 0;
+        while (ci < ncols) : (ci += 1) {
+            x_cur += col_w[ci];
+            vt_rt.FillRectangle(rt, &.{ .left = x_cur - 1, .top = y, .right = x_cur, .bottom = y_cur }, bd);
+        }
+    }
+    return y_cur - y;
 }
 
 fn applySyntaxHighlighting(lay: *anyopaque, text: []const u8) void {
@@ -538,24 +704,23 @@ fn wndProc(hwnd: HWND, msg: u32, wParam: WPARAM, lParam: LPARAM) callconv(.C) LR
                 PostQuitMessage(0);
                 return 0;
             }
+            if (wParam == VK_HOME) {
+                app.scroll_y = 0;
+                _ = InvalidateRect(hwnd, null, 0);
+                return 0;
+            }
+            if (wParam == VK_END) {
+                const max_scroll = app.content_height - app.window_height + 40;
+                app.scroll_y = if (max_scroll > 0) max_scroll else 0;
+                _ = InvalidateRect(hwnd, null, 0);
+                return 0;
+            }
             return 0;
         },
         WM_NCHITTEST => {
-            const lp: usize = @bitCast(lParam);
-            const raw_x: i16 = @bitCast(@as(u16, @truncate(lp)));
-            const raw_y: i16 = @bitCast(@as(u16, @truncate(lp >> 16)));
-            var pt = POINT{ .x = raw_x, .y = raw_y };
-            _ = ScreenToClient(hwnd, &pt);
-            const border: i32 = 6;
-            const w: i32 = @intFromFloat(app.window_width);
-            const h: i32 = @intFromFloat(app.window_height);
-            if (pt.x > w - 40 and pt.y < 36) { PostQuitMessage(0); return 0; }
-            if (pt.y < border) { if (pt.x < border) return HTTOPLEFT; if (pt.x > w - border) return HTTOPRIGHT; return HTTOP; }
-            if (pt.y > h - border) { if (pt.x < border) return HTBOTTOMLEFT; if (pt.x > w - border) return HTBOTTOMRIGHT; return HTBOTTOM; }
-            if (pt.x < border) return HTLEFT;
-            if (pt.x > w - border) return HTRIGHT;
+            // Alt+Ziehen von überall behalten, alles andere macht der Systemrahmen.
             if ((@as(u16, @bitCast(GetKeyState(VK_MENU))) & 0x8000) != 0) return HTCAPTION;
-            return HTCLIENT;
+            return DefWindowProcW(hwnd, msg, wParam, lParam);
         },
         WM_TIMER => {
             const timer_id = @as(usize, @bitCast(wParam));
@@ -566,10 +731,6 @@ fn wndProc(hwnd: HWND, msg: u32, wParam: WPARAM, lParam: LPARAM) callconv(.C) LR
         WM_DROPFILES => {
             handleDrop(@ptrFromInt(@as(usize, @bitCast(wParam))));
             return 0;
-        },
-        WM_NCCALCSIZE => {
-            if (wParam != 0) return 0;
-            return DefWindowProcW(hwnd, msg, wParam, lParam);
         },
         WM_DESTROY => {
             app.saveScrollPosition();
@@ -592,11 +753,25 @@ fn handleDrop(hDrop: *anyopaque) void {
     app.file_path = app.allocator.dupe(u8, path) catch return;
     app.logFmt("dropped: {s}", .{app.file_path});
     app.loadFile();
+    updateTitle();
     invalidate();
 }
 
-pub fn registerFileAssociation() void {
-    var exe_buf: [512]u16 = undefined;
+fn updateTitle() void {
+    const hwnd = g_hwnd orelse return;
+    var utf8: [1024]u8 = undefined;
+    const title = if (app.file_path.len > 0)
+        std.fmt.bufPrint(&utf8, "mdview - {s}", .{std.fs.path.basename(app.file_path)}) catch "mdview"
+    else
+        "mdview";
+    var wide: [1024]u16 = undefined;
+    const wlen = std.unicode.utf8ToUtf16Le(&wide, title) catch return;
+    if (wlen + 1 >= wide.len) return;
+    wide[wlen] = 0;
+    _ = SetWindowTextW(hwnd, @ptrCast(&wide));
+}
+
+pub fn registerFileAssociation() void {    var exe_buf: [512]u16 = undefined;
     const exe_len = GetModuleFileNameW(null, &exe_buf, 512);
     if (exe_len == 0) return;
     var cmd_buf: [600]u16 = undefined;
